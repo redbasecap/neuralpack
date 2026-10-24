@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neuralpack"
+version = "0.1.0"
+description = "Neural image & video compression with a shared learned prior: send tiny .npk files, open full-quality pictures."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Nick Spieser" }]
+keywords = ["compression", "image", "video", "neural", "learned-compression", "hyperprior", "entropy-coding"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Graphics",
+  "Topic :: System :: Archiving :: Compression",
+]
+dependencies = [
+  "torch>=2.1",
+  "compressai>=1.2",
+  "numpy>=1.24",
+  "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+metrics = ["pytorch-msssim>=1.0"]
+dev = ["pytest>=7", "pytorch-msssim>=1.0", "ruff>=0.4"]
+
+[project.scripts]
+npk = "neuralpack.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/nickspieser/neuralpack"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = ["weights: needs pretrained weights (downloaded on first use)"]
+filterwarnings = ["ignore::FutureWarning", "ignore::UserWarning", "ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
