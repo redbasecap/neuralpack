@@ -18,6 +18,7 @@ def test_encode_decode_info_cli(photo, tmp_path, capsys):
     assert main(["encode", str(src), "-q", "3", "--quiet"]) == 0
     npk_file = tmp_path / "pic.npk"
     assert npk_file.exists() and npk_file.stat().st_size < src.stat().st_size / 5
+    capsys.readouterr()  # drop anything printed so far (e.g. first-run weight download notices)
     assert main(["info", str(npk_file), "--json"]) == 0
     info = json.loads(capsys.readouterr().out)
     assert info["width"] == photo.width and info["quality"] == 3
