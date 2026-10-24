@@ -52,7 +52,7 @@ identically everywhere, see [Determinism](#determinism-across-devices)).
 ## Install
 
 ```bash
-git clone https://github.com/nickspieser/neuralpack && cd neuralpack
+git clone https://github.com/redbasecap/neuralpack && cd neuralpack
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"          # torch, compressai, pillow, numpy (+ pytest, msssim, ruff)
 npk models --download            # optional: pre-fetch all weights (~450 MB); otherwise lazy, per quality level

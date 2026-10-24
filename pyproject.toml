@@ -34,7 +34,7 @@ dev = ["pytest>=7", "pytorch-msssim>=1.0", "ruff>=0.4"]
 npk = "neuralpack.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/nickspieser/neuralpack"
+Homepage = "https://github.com/redbasecap/neuralpack"
 
 [tool.setuptools.packages.find]
 where = ["src"]
