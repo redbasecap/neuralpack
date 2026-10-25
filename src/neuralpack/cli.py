@@ -53,6 +53,9 @@ def _add_common_encode(p: argparse.ArgumentParser) -> None:
     p.add_argument("--overlap", type=int, default=DEFAULT_OVERLAP,
                    help=f"halo around tiles in px (default {DEFAULT_OVERLAP})")
     p.add_argument("--no-metadata", action="store_true", help="drop EXIF / ICC profile")
+    p.add_argument("--no-web", action="store_true",
+                   help="use the float64 hyper-synthesis instead of the integer one; ~0.1 %% smaller "
+                        "but the file cannot be opened by the browser viewer")
 
 
 def _add_device(p: argparse.ArgumentParser) -> None:
@@ -157,6 +160,26 @@ def cmd_models(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export_web(a: argparse.Namespace) -> int:
+    from .webexport import default_models_dir, export_model, exportable
+
+    out = Path(a.output) if a.output else default_models_dir()
+    targets = exportable() if not a.qualities else [(a.model, q) for q in a.qualities]
+    for model, q in targets:
+        d = export_model(out, model, q, device="cpu")
+        size = sum(f.stat().st_size for f in d.iterdir())
+        print(f"{model} q{q} -> {d} ({_human(size)})")
+    print(f"index: {out / 'index.json'}")
+    return 0
+
+
+def cmd_serve(a: argparse.Namespace) -> int:
+    from .serve import serve
+
+    return serve(port=a.port, models_dir=Path(a.models) if a.models else None, open_browser=not a.no_open,
+                 export_missing=not a.no_export)
+
+
 def cmd_bench(a: argparse.Namespace) -> int:
     from .bench import run_bench
 
@@ -203,6 +226,19 @@ def build_parser() -> argparse.ArgumentParser:
     m = sub.add_parser("models", help="list priors and devices; --download caches weights")
     m.add_argument("--download", nargs="*", metavar="MODEL", help="pre-download weights (no arg = all)")
     m.set_defaults(func=cmd_models)
+
+    x = sub.add_parser("export-web", help="export priors for the browser viewer (ONNX + integer tables)")
+    x.add_argument("-o", "--output", help="target directory (default ~/.cache/neuralpack/web-models)")
+    x.add_argument("-m", "--model", choices=sorted(MODELS), default=DEFAULT_MODEL)
+    x.add_argument("-q", "--qualities", type=_qualities, default=None, help="default: all calibrated")
+    x.set_defaults(func=cmd_export_web)
+
+    sv = sub.add_parser("serve", help="serve the browser viewer locally (exports missing priors first)")
+    sv.add_argument("-p", "--port", type=int, default=8765)
+    sv.add_argument("--models", help="exported models directory (default ~/.cache/neuralpack/web-models)")
+    sv.add_argument("--no-open", action="store_true", help="do not open the browser")
+    sv.add_argument("--no-export", action="store_true", help="do not export missing priors")
+    sv.set_defaults(func=cmd_serve)
 
     b = sub.add_parser("bench", help="rate/quality table vs JPEG & WebP at equal file size")
     b.add_argument("inputs", nargs="+")

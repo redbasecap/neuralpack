@@ -108,7 +108,7 @@ def _extract_metadata(img: Image.Image) -> dict:
 # --------------------------------------------------------------------------- tile coding
 
 @torch.no_grad()
-def encode_tile(model: LoadedModel, x: torch.Tensor) -> tuple[bytes, bytes]:
+def encode_tile(model: LoadedModel, x: torch.Tensor, integer: bool = False) -> tuple[bytes, bytes]:
     """Encode one (1,3,H,W) float tensor in [0,1] to (y_bytes, z_bytes)."""
     net = model.net
     xp = _pad(x).to(model.device)
@@ -117,19 +117,20 @@ def encode_tile(model: LoadedModel, x: torch.Tensor) -> tuple[bytes, bytes]:
     z_cpu = z.cpu()
     z_strings = model.entropy_bottleneck.compress(z_cpu)
     z_hat = model.entropy_bottleneck.decompress(z_strings, z_cpu.shape[-2:])
-    scales, means = model.entropy_params(z_hat)
+    scales, means = model.entropy_params(z_hat, integer=integer)
     indexes = model.gaussian_conditional.build_indexes(scales)
     y_strings = model.gaussian_conditional.compress(y.cpu(), indexes, means=means)
     return y_strings[0], z_strings[0]
 
 
 @torch.no_grad()
-def decode_tile(model: LoadedModel, y_bytes: bytes, z_bytes: bytes, h: int, w: int) -> torch.Tensor:
+def decode_tile(model: LoadedModel, y_bytes: bytes, z_bytes: bytes, h: int, w: int,
+                integer: bool = False) -> torch.Tensor:
     """Decode one tile of size (h, w) back to a (1,3,h,w) tensor on ``model.device``."""
     ph, pw = h + (-h) % STRIDE, w + (-w) % STRIDE
     z_shape = (ph // STRIDE, pw // STRIDE)
     z_hat = model.entropy_bottleneck.decompress([z_bytes], z_shape)
-    scales, means = model.entropy_params(z_hat)
+    scales, means = model.entropy_params(z_hat, integer=integer)
     indexes = model.gaussian_conditional.build_indexes(scales)
     y_hat = model.gaussian_conditional.decompress([y_bytes], indexes, means=means)
     x_hat = model.net.g_s(y_hat.to(model.device))
@@ -140,13 +141,16 @@ def decode_tile(model: LoadedModel, y_bytes: bytes, z_bytes: bytes, h: int, w: i
 
 def encode_image(img: Image.Image, quality: int = DEFAULT_QUALITY, model: str = DEFAULT_MODEL,
                  device: str = "auto", tile: int = DEFAULT_TILE, overlap: int = DEFAULT_OVERLAP,
-                 keep_metadata: bool = True, progress: ProgressFn | None = None) -> EncodeResult:
+                 keep_metadata: bool = True, progress: ProgressFn | None = None,
+                 web: bool | None = None) -> EncodeResult:
     """Compress a PIL image into .npk bytes.
 
     quality   1 (smallest, ~0.08 bpp) .. 8 (near-transparent, ~0.8 bpp)
     model     "mean-scale" (default) or "hyperprior"
     tile      max tile edge in pixels; 0 codes the picture in one piece
     overlap   halo around each tile (pixels) to hide seams
+    web       use the integer hyper-synthesis so the file is decodable in the browser
+              (default: yes whenever the model/quality supports it; costs ~0.1-0.2 % bits)
     """
     t0 = time.perf_counter()
     if img.width > MAX_DIM or img.height > MAX_DIM:
@@ -158,19 +162,23 @@ def encode_image(img: Image.Image, quality: int = DEFAULT_QUALITY, model: str = 
     rgb = img.convert("RGB")
 
     lm = load_model(model, quality, device)
+    if web is None:
+        web = lm.int_hyper is not None
+    elif web and lm.int_hyper is None:
+        raise ValueError(f"{model} q{quality} has no integer hyper-synthesis; web mode unavailable")
     grid = tile_grid(rgb.width, rgb.height, tile, overlap)
     payloads: list[tuple[bytes, bytes]] = []
     for i, t in enumerate(grid):
         region = rgb.crop((t.ex0, t.ey0, t.ex1, t.ey1))
-        payloads.append(encode_tile(lm, _to_tensor(region)))
+        payloads.append(encode_tile(lm, _to_tensor(region), integer=web))
         if progress:
             progress(i + 1, len(grid))
 
     header = container.NpkHeader(
         model_id=lm.spec.id, quality=quality, width=rgb.width, height=rgb.height,
         tile=tile if len(grid) > 1 else 0, overlap=overlap if len(grid) > 1 else 0,
-        ntiles=len(grid), table_fingerprint=lm.table_fingerprint,
-        grayscale=grayscale, metadata=meta,
+        ntiles=len(grid), table_fingerprint=lm.fingerprint(web),
+        grayscale=grayscale, metadata=meta, int_hyper=web,
     )
     data = container.pack(header, payloads)
     return EncodeResult(data, rgb.width, rgb.height, lm.spec.name, quality, len(grid),
@@ -186,9 +194,14 @@ def decode_bytes(data: bytes, device: str = "auto", progress: ProgressFn | None 
         raise container.NpkFormatError(
             f"file needs model id {header.model_id}, which this version does not know")
     lm = load_model(spec.name, header.quality, device)
-    if lm.table_fingerprint != header.table_fingerprint:
+    if header.int_hyper and lm.int_hyper is None:
+        raise container.NpkFormatError(
+            f"file uses the integer hyper-synthesis of {spec.name} q{header.quality}, "
+            "which this installation lacks calibration data for")
+    local_fp = lm.fingerprint(header.int_hyper)
+    if local_fp != header.table_fingerprint:
         msg = (f"entropy tables of the local {spec.name} q{header.quality} model "
-               f"({lm.table_fingerprint:08x}) differ from the encoder's "
+               f"({local_fp:08x}) differ from the encoder's "
                f"({header.table_fingerprint:08x}); the weights are a different version")
         if strict:
             raise container.NpkFormatError(msg)
@@ -199,7 +212,7 @@ def decode_bytes(data: bytes, device: str = "auto", progress: ProgressFn | None 
         raise container.NpkFormatError("tile count does not match geometry")
     canvas = torch.empty(1, 3, header.height, header.width)
     for i, (t, (yb, zb)) in enumerate(zip(grid, payloads)):
-        xt = decode_tile(lm, yb, zb, t.ey1 - t.ey0, t.ex1 - t.ex0)
+        xt = decode_tile(lm, yb, zb, t.ey1 - t.ey0, t.ex1 - t.ex0, integer=header.int_hyper)
         left, top, right, bottom = t.crop
         canvas[..., t.y0:t.y1, t.x0:t.x1] = xt[..., top:bottom, left:right].cpu()
         if progress:

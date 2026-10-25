@@ -1,0 +1,38 @@
+{
+ "mean-scale:1": {
+  "in_shift": 10,
+  "shifts": [
+   17,
+   14,
+   18
+  ],
+  "fingerprint": "00eacd2c"
+ },
+ "mean-scale:3": {
+  "in_shift": 10,
+  "shifts": [
+   16,
+   16,
+   13
+  ],
+  "fingerprint": "61f6f0cb"
+ },
+ "mean-scale:5": {
+  "in_shift": 10,
+  "shifts": [
+   16,
+   17,
+   7
+  ],
+  "fingerprint": "3c382c8f"
+ },
+ "mean-scale:8": {
+  "in_shift": 9,
+  "shifts": [
+   16,
+   16,
+   6
+  ],
+  "fingerprint": "097f4ca6"
+ }
+}

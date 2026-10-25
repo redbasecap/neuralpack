@@ -20,7 +20,8 @@ full‑resolution picture.
 | **Any size** | Tiled coding with halos: 100 megapixels on a laptop, no visible seams. |
 | **Any device** | Bitstreams are device‑independent by construction. Encode on an NVIDIA GPU, open on a MacBook or a Raspberry Pi. |
 | **Honest** | A container with a CRC, a model fingerprint, EXIF/ICC pass‑through, and loud failures instead of silent garbage. |
-| **Simple** | `pip install .` then `npk encode photo.jpg` and `npk decode photo.npk`. One Python call each. |
+| **Opens anywhere** | The receiver needs **nothing installed**: `.npk` files decode in the browser (WebGPU, falls back to CPU) bit-exactly with the Python encoder. 9.4 MP in 4.5 s on a MacBook. |
+| **Simple** | `pip install .` then `npk encode photo.jpg` and `npk decode photo.npk`. One Python call each. `npk serve` for the viewer. |
 
 ---
 
@@ -39,7 +40,7 @@ transform `g_s` paints the picture back.
 
 Everything the model knows about edges, skin, foliage, sky, fabric, noise statistics, lives in
 its weights, **once, on both sides**. The file only has to say *which* of the structures the model
-already knows are present, where, and how strong. That is why a 36‑byte header plus a few hundred
+already knows are present, where, and how strong. That is why a 32‑byte header plus a few hundred
 kilobytes of indexes can reconstruct a 16 MB photograph.
 
 What it is **not**: lossless. Information theory does not allow a 20:1 lossless ratio on real
@@ -72,6 +73,7 @@ npk open holiday.npk                       # decode to a temp file and show it i
 npk info holiday.npk                       # what is inside: model, quality, tiles, bytes per part
 npk bench holiday.jpg -q 1,3,5,8           # rate/quality table vs JPEG & WebP at *equal file size*
 npk encode clip.mp4 && npk decode clip.npkv # experimental intra-frame video (see below)
+npk serve                                  # browser viewer at http://127.0.0.1:8765 (exports priors once)
 ```
 
 ```python
@@ -143,6 +145,45 @@ PNG writing. A 24 MP camera JPEG of ~20 MB becomes ~1 MB at quality 3 and ~2 MB 
 **Tiling overhead** (same 9.4 MP photo, q5): one piece 785 kB · 2048‑px tiles +4 % · 1024‑px tiles
 (default) +7 % · 512‑px tiles +16 %. Use `--tile 0` or `--tile 2048` when memory allows.
 
+## The browser viewer
+
+```bash
+npk serve            # exports the priors for the web once (~12-30 MB per quality), then opens the viewer
+```
+
+Drop an `.npk` on the page and the picture appears. Nothing is uploaded; the page fetches the
+prior once (cached by the browser) and decodes locally: the range decoder and the integer
+hyper-synthesis run in JavaScript / WebGPU, the synthesis transform runs in ONNX Runtime Web
+(WebGPU, WASM fallback). Measured in Chrome on an Apple M‑series laptop:
+
+| picture | file | decode in browser | PSNR browser / Python |
+|---|---|---|---|
+| Kodak 768×512, q5 | 13.7 kB | 0.39 s | 37.40 / 37.37 dB |
+| 4608×2048 (9.4 MP), 15 tiles, q5 | 844 kB | 4.55 s | 34.69 / 34.70 dB |
+
+To publish the viewer, copy `src/neuralpack/web/` and the exported `~/.cache/neuralpack/web-models/`
+(as `models/` next to `index.html`) to any static host. Files written with `--no-web` use the float
+hyper-synthesis and can only be opened by the Python decoder.
+
+### Why the browser can decode at all: an integer hyper-synthesis
+
+A learned codec's entropy decoder must reproduce the encoder's probability tables *exactly*.
+The tables come from a small network (`h_s`) and a single floating-point ulp of difference at a
+threshold desynchronises the arithmetic decoder, after which the rest of the tile is noise.
+Measured here: plain float32 (CPU, Metal, ONNX Runtime) flips 3–9 indexes per 2 million
+latents, i.e. several ruined tiles per picture. No amount of care about summation order fixes
+this across GPUs, browsers and CPUs.
+
+`npk` therefore evaluates `h_s` in **integer arithmetic only** (after Ballé et al. 2019, as a
+post-training quantisation of the published weights): int16 weights per output channel with the
+scales folded into the next layer, int16 activations, one power-of-two shift per layer, sums
+accumulated exactly (float64 in PyTorch and JavaScript, a carry-tracked 64-bit pair in the
+WebGPU shader), and one correctly rounded IEEE multiply to turn the integers into float32
+scales and means. Every implementation produces the same bits; the test suite checks the
+JavaScript path against Python CRC for CRC. Cost on Kodak versus the float64 reference:
+0.06–0.2 % of file size. The synthesis transform `g_s` stays in float, because it only shapes
+pixels, never the parse.
+
 ## Design
 
 ### File format `.npk`
@@ -151,13 +192,13 @@ PNG writing. A 24 MP camera JPEG of ~20 MB becomes ~1 MB at quality 3 and ~2 MB 
  4  magic "NPK\x01"               4  width          4  tile count
  1  model id                      4  height         4  entropy-table fingerprint (CRC32)
  1  quality                       2  tile edge      4  metadata length
- 1  flags (grayscale, metadata)   2  tile overlap   n  metadata: zlib(JSON{exif, icc, dpi, source_format})
+ 1  flags (gray, meta, int-hyper) 2  tile overlap   n  metadata: zlib(JSON{exif, icc, dpi, source_format})
  1  reserved
  per tile: u32 len(y) · u32 len(z) · y bytes (main latent) · z bytes (hyper-latent)
  4  CRC32 of everything above
 ```
 
-36‑byte header, 8 bytes per tile. On a 24 MP picture the container costs < 0.02 %. Tile geometry
+32‑byte header, 8 bytes per tile. On a 24 MP picture the container costs < 0.02 %. Tile geometry
 is a pure function of (width, height, tile, overlap), so nothing per tile is stored.
 
 ### Tiling
@@ -209,7 +250,8 @@ A learned *inter*‑frame codec is the obvious next step (see roadmap).
 * **Lossless layer**: optional residual so `npk` can also be a bit‑exact archive format (ratio then
   drops to ~2:1, as for all lossless photo codecs).
 * **Progressive decode / thumbnails** from the hyper‑latent alone.
-* **Viewer integrations**: macOS Quick Look plugin, browser WASM decoder.
+* **Viewer integrations**: macOS Quick Look plugin; share links / QR codes in front of the browser viewer.
+* **Integer priors for all quality levels** (today 1, 3, 5, 8 of `mean-scale` are calibrated for the web).
 * **Own prior**: train a larger model on a broader corpus and publish it with a stable fingerprint.
 
 ## Development
@@ -217,14 +259,17 @@ A learned *inter*‑frame codec is the obvious next step (see roadmap).
 ```bash
 pip install -e ".[dev]"
 ruff check src tests bench
-pytest -q                       # 37 tests; the end-to-end ones download the q3 weights on first run
+pytest -q                       # 42 tests; the end-to-end ones download the q3 weights on first run
+node tests/web/test_npk.mjs GOLDEN MODELS   # JS decoder vs Python golden vectors (pytest runs it too)
 bench/run_kodak.sh              # reproduce the Kodak table
 python bench/mosaic_bench.py big_photo.jpg
 ```
 
 Layout: `src/neuralpack/` — `models.py` (prior registry, device handling, fingerprint),
 `codec.py` (tile coding, public API), `container.py` (file format), `tiling.py`, `video.py`,
-`metrics.py`, `bench.py`, `cli.py`. Tests mirror the modules.
+`metrics.py`, `bench.py`, `cli.py`, `inthyper.py` (integer hyper-synthesis), `webexport.py`,
+`serve.py`, and `web/` (`npk.js` container + rANS + integer network, `gpu.js` WebGPU shaders,
+`index.html` viewer). Tests mirror the modules.
 
 Start‑up note: CompressAI imports `torch_geometric` and `torchvision` unguarded, which costs
 10–20 s on many machines. `neuralpack.models` satisfies those imports with a throw‑away stub so
@@ -245,7 +290,9 @@ Kodak images from the Kodak Lossless True Color Image Suite.
 `npk` komprimiert Fotos mit einem **geteilten, vortrainierten Modell**: Sender und Empfänger haben
 dasselbe "Wörterbuch" aus gelernten Bildstrukturen (eine nichtlineare Verallgemeinerung der
 DCT/PCA‑Rotation). Die Datei enthält nur noch entropie‑codierte Indizes in dieses Wörterbuch.
-Gemessen: 16,5 MB PNG → 0,84 MB bei 34,7 dB; JPEG braucht für dieselbe Qualität 1,77 MB. Verlustfrei
+Gemessen: 16,5 MB PNG → 0,84 MB bei 34,7 dB; JPEG braucht für dieselbe Qualität 1,77 MB. Der Empfänger
+braucht nichts zu installieren: `.npk` öffnet im Browser (WebGPU), bit-identisch zum Encoder, dank einer
+reinen Ganzzahl-Hyper-Synthese. Verlustfrei
 ist das nicht (das verbietet die Informationstheorie bei 20:1), aber wahrnehmungstreu, geräte‑
 unabhängig, mit CRC, Modell‑Fingerabdruck und EXIF‑Durchreichung. `npk encode foto.jpg`,
 `npk decode foto.npk`, fertig.

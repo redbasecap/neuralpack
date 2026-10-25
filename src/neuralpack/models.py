@@ -192,8 +192,21 @@ class LoadedModel:
         self.gaussian_conditional = copy.deepcopy(net.gaussian_conditional).cpu().eval()
         # Float64 CPU twin of the hyper-synthesis for bit-exact entropy parameters.
         self.h_s64 = copy.deepcopy(net.h_s).cpu().double().eval()
+        # Integer-only hyper-synthesis (see inthyper.py): identical on every device and
+        # in the browser. Available for qualities with stored calibration shifts.
+        from .inthyper import IntHyperSynthesis, stored_shifts
+
+        self.int_hyper: IntHyperSynthesis | None = None
+        stored = stored_shifts(spec.name, quality)
+        if stored is not None:
+            in_shift, shifts = stored
+            self.int_hyper = IntHyperSynthesis.quantize(net.h_s, spec.has_means, shifts=shifts,
+                                                        in_shift=in_shift)
         self.net = net.to(device)
         self.table_fingerprint = self._fingerprint()
+        self.int_fingerprint = (zlib.crc32(self.int_hyper.fingerprint.to_bytes(4, "little"),
+                                           self.table_fingerprint) & 0xFFFFFFFF
+                                if self.int_hyper is not None else None)
 
     def _fingerprint(self) -> int:
         """CRC32 over the entropy coder tables. Stored in every file so a decoder with
@@ -206,13 +219,29 @@ class LoadedModel:
         return h & 0xFFFFFFFF
 
     @torch.no_grad()
-    def entropy_params(self, z_hat: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """(scales, means) for the latent ``y`` given dequantised ``z_hat`` (CPU, float32)."""
+    def entropy_params(self, z_hat: torch.Tensor, integer: bool = False
+                       ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """(scales, means) for the latent ``y`` given dequantised ``z_hat`` (CPU, float32).
+
+        ``integer=True`` uses the integer-only hyper-synthesis (bit-exact everywhere, needed
+        for files the browser decoder must read); otherwise the float64 CPU path.
+        """
+        if integer:
+            if self.int_hyper is None:
+                raise ValueError(f"{self.spec.name} q{self.quality} has no integer hyper-synthesis")
+            return self.int_hyper(z_hat)
         params = self.h_s64(z_hat.cpu().double())
         if self.spec.has_means:
             scales, means = params.chunk(2, 1)
             return scales.float(), means.float()
         return params.float(), None
+
+    def fingerprint(self, integer: bool) -> int:
+        if integer:
+            if self.int_fingerprint is None:
+                raise ValueError(f"{self.spec.name} q{self.quality} has no integer hyper-synthesis")
+            return self.int_fingerprint
+        return self.table_fingerprint
 
 
 _CACHE: dict[tuple[str, int, str], LoadedModel] = {}

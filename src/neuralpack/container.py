@@ -6,7 +6,7 @@ All integers little-endian. Layout::
     | 4      | magic  b"NPK\\x01"                                             |
     | 1      | model id (see models.MODELS_BY_ID)                            |
     | 1      | quality (1..8)                                                 |
-    | 1      | flags  bit0 = grayscale source, bit1 = metadata chunk present  |
+    | 1      | flags  bit0 grayscale, bit1 metadata, bit2 integer hyper-synth  |
     | 1      | reserved (0)                                                   |
     | 4 + 4  | width, height in pixels                                        |
     | 2 + 2  | tile size, tile overlap in pixels (tile 0 = single tile)       |
@@ -18,7 +18,7 @@ All integers little-endian. Layout::
     | 4      | CRC32 of everything above                                      |
     +--------+---------------------------------------------------------------+
 
-The header is 36 bytes, the per-tile overhead 8 bytes. A whole 24 MP photo at
+The header is 32 bytes, the per-tile overhead 8 bytes. A whole 24 MP photo at
 quality 5 is ~800 kB of payload, so the container costs < 0.02 %.
 """
 
@@ -31,11 +31,12 @@ from dataclasses import dataclass, field
 
 MAGIC = b"NPK\x01"
 _HDR = struct.Struct("<4sBBBBIIHHIII")
-HEADER_SIZE = _HDR.size  # 36
+HEADER_SIZE = _HDR.size  # 32
 _TILE = struct.Struct("<II")
 
 FLAG_GRAYSCALE = 1 << 0
 FLAG_METADATA = 1 << 1
+FLAG_INT_HYPER = 1 << 2  # entropy parameters from the integer hyper-synthesis (web-decodable)
 
 
 class NpkFormatError(ValueError):
@@ -54,10 +55,12 @@ class NpkHeader:
     table_fingerprint: int
     grayscale: bool = False
     metadata: dict = field(default_factory=dict)
+    int_hyper: bool = False
 
     @property
     def flags(self) -> int:
-        return (FLAG_GRAYSCALE if self.grayscale else 0) | (FLAG_METADATA if self.metadata else 0)
+        return ((FLAG_GRAYSCALE if self.grayscale else 0) | (FLAG_METADATA if self.metadata else 0)
+                | (FLAG_INT_HYPER if self.int_hyper else 0))
 
 
 def pack(header: NpkHeader, tiles: list[tuple[bytes, bytes]]) -> bytes:
@@ -115,7 +118,8 @@ def unpack(data: bytes) -> tuple[NpkHeader, list[tuple[bytes, bytes]]]:
     if pos != len(body):
         raise NpkFormatError(f"{len(body) - pos} unexpected trailing bytes")
     header = NpkHeader(model_id, quality, width, height, tile, overlap, ntiles, fp,
-                       grayscale=bool(flags & FLAG_GRAYSCALE), metadata=metadata)
+                       grayscale=bool(flags & FLAG_GRAYSCALE), metadata=metadata,
+                       int_hyper=bool(flags & FLAG_INT_HYPER))
     return header, tiles
 
 
@@ -135,6 +139,7 @@ def inspect(data: bytes) -> dict:
         "height": header.height,
         "megapixels": round(px / 1e6, 2),
         "grayscale": header.grayscale,
+        "web_decodable": header.int_hyper,
         "tile": header.tile,
         "overlap": header.overlap,
         "tiles": header.ntiles,

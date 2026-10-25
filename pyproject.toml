@@ -39,6 +39,9 @@ Homepage = "https://github.com/redbasecap/neuralpack"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+neuralpack = ["inthyper_shifts.json", "web/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
