@@ -55,7 +55,8 @@ identically everywhere, see [Determinism](#determinism-across-devices)).
 ```bash
 git clone https://github.com/redbasecap/neuralpack && cd neuralpack
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"          # torch, compressai, pillow, numpy (+ pytest, msssim, ruff)
+pip install -e ".[dev]"          # torch, compressai, pillow, numpy (+ pytest, msssim, ruff, onnx)
+# or just: pip install -e ".[web]"   for the browser viewer, pip install -e .   for encode/decode only
 npk models --download            # optional: pre-fetch all weights (~450 MB); otherwise lazy, per quality level
 ```
 

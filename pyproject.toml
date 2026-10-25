@@ -28,7 +28,8 @@ dependencies = [
 
 [project.optional-dependencies]
 metrics = ["pytorch-msssim>=1.0"]
-dev = ["pytest>=7", "pytorch-msssim>=1.0", "ruff>=0.4"]
+web = ["onnx>=1.15"]  # npk export-web / npk serve (ONNX export of the synthesis transform)
+dev = ["pytest>=7", "pytorch-msssim>=1.0", "ruff>=0.4", "onnx>=1.15", "onnxruntime>=1.17"]
 
 [project.scripts]
 npk = "neuralpack.cli:main"
